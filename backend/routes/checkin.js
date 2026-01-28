@@ -79,18 +79,24 @@ router.get('/active', auth, async (req, res) => {
     }
 });
 
+// Line 45: SQLite doesn't support RETURNING in UPDATE
 router.put('/checkout', auth, async (req, res) => {
     try {
-        const result = await db.query(`
-            UPDATE checkins 
-            SET checkout_time = CURRENT_TIMESTAMP, status = 'checked_out' 
-            WHERE employee_id = ? AND status = 'checked_in'
-            RETURNING *
-        `, [req.user.id]);
+        // 🐛 FIX: Separate SELECT + UPDATE
+        const activeResult = await db.query(
+            'SELECT id FROM checkins WHERE employee_id = ? AND status = "checked_in" ORDER BY checkin_time DESC LIMIT 1',
+            [req.user.id]
+        );
         
-        if (result.changes === 0) {
+        if (activeResult.rows.length === 0) {
             return res.status(400).json({ error: 'No active check-in found' });
         }
+
+        const updateResult = await db.query(
+            'UPDATE checkins SET checkout_time = CURRENT_TIMESTAMP, status = "checked_out" WHERE id = ?',
+            [activeResult.rows[0].id]
+        );
+        
         res.json({ success: true, message: 'Checked out successfully' });
     } catch (error) {
         res.status(500).json({ error: error.message });

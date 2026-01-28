@@ -7,7 +7,7 @@ db.pragma('foreign_keys = ON');
 
 const query = (sql, params = []) => {
     try {
-        if (sql.toUpperCase().startsWith('SELECT')) {
+        if (sql.toUpperCase().includes('SELECT')) {
             const stmt = db.prepare(sql);
             return { rows: stmt.all(...params) };
         } else {
@@ -20,6 +20,4 @@ const query = (sql, params = []) => {
     }
 };
 
-module.exports = {
-    query: (sql, params) => Promise.resolve(query(sql, params))
-};
+module.exports = { query: (sql, params) => Promise.resolve(query(sql, params)) };
