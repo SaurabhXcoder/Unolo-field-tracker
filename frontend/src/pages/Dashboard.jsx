@@ -12,7 +12,7 @@ function Dashboard({ user }) {
 
     const fetchDashboardData = async () => {
         try {
-            const endpoint = user.id === 1 ? '/dashboard/stats' : '/dashboard/employee';
+            const endpoint = '/dashboard';  // Backend handles role logic
             const response = await api.get(endpoint);
             
             if (response.data.success) {
