@@ -1,87 +1,96 @@
 const express = require('express');
 const db = require('../config/database');
-const auth = require('../middleware/auth');
+const { authenticateToken, requireManager } = require('../middleware/auth');
+
 const router = express.Router();
 
-// 🐛 FIXED: Added try/catch + SQLite date functions
-router.get('/', auth, async (req, res) => {
+/**
+ * MANAGER DASHBOARD
+ * GET /api/dashboard/stats
+ */
+router.get('/stats', authenticateToken, requireManager, async (req, res) => {
     try {
-        if (req.user.role === 'manager') {
-            const result = await db.query(`
-                SELECT 
-                    u.id, u.name, 
-                    COUNT(c.id) as total_checkins,
-                    AVG(c.distance_from_client) as avg_distance,
-                    MAX(c.checkin_time) as last_checkin
-                FROM users u
-                LEFT JOIN checkins c ON u.id = c.employee_id
-                WHERE u.manager_id = ?
-                GROUP BY u.id, u.name
-            `, [req.user.id]);
-            res.json({ success: true, data: result.rows });
-        } else {
-            const result = await db.query(`
-                SELECT COUNT(*) as total_checkins, AVG(distance_from_client) as avg_distance
-                FROM checkins WHERE employee_id = ?
-            `, [req.user.id]);
-            res.json({ success: true, data: result.rows[0] });
-        }
-    } catch (error) {  // ✅ ADDED
-        res.status(500).json({ error: error.message });
-    }
-});
+        const today = new Date().toISOString().split('T')[0];
 
-// ✨ FEATURE B: Daily Summary (SQLite FIXED)
-router.get('/reports/daily-summary', auth, async (req, res) => {
-    try {
-        if (req.user.role !== 'manager') {
-            return res.status(403).json({ error: 'Manager access only' });
-        }
+        const teamMembers = await db.query(
+            'SELECT id, name, email FROM users WHERE manager_id = ?',
+            [req.user.id]
+        );
 
-        const { date } = req.query;
-        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            return res.status(400).json({ error: 'Valid date (YYYY-MM-DD) required' });
-        }
+        const todayCheckins = await db.query(`
+            SELECT ch.*, u.name AS employee_name, c.name AS client_name
+            FROM checkins ch
+            JOIN users u ON ch.employee_id = u.id
+            JOIN clients c ON ch.client_id = c.id
+            WHERE u.manager_id = ? AND date(ch.checkin_time) = ?
+            ORDER BY ch.checkin_time DESC
+        `, [req.user.id, today]);
 
-        // ✅ FIXED: SQLite uses date() not DATE()
-        const teamResult = await db.query(`
-            SELECT 
-                COUNT(DISTINCT c.employee_id) as active_employees,
-                COUNT(*) as total_checkins,
-                AVG(c.distance_from_client) as avg_distance
-            FROM checkins c
-            WHERE date(c.checkin_time) = ? AND c.employee_id IN (
-                SELECT id FROM users WHERE manager_id = ?
-            )
-        `, [date, req.user.id]);
-
-        const employeeResult = await db.query(`
-            SELECT 
-                u.id, u.name,
-                COUNT(c.id) as checkins,
-                COUNT(DISTINCT c.client_id) as clients_visited,
-                COALESCE(SUM(
-                    CASE 
-                        WHEN c.checkout_time IS NOT NULL 
-                        THEN (julianday(c.checkout_time) - julianday(c.checkin_time)) * 24 
-                        ELSE 0 
-                    END
-                ), 0) as total_hours
-            FROM users u
-            LEFT JOIN checkins c ON u.id = c.employee_id AND date(c.checkin_time) = ?
-            WHERE u.manager_id = ?
-            GROUP BY u.id, u.name
-            ORDER BY checkins DESC
-        `, [date, req.user.id]);
+        const activeCount = await db.query(`
+            SELECT COUNT(*) AS count
+            FROM checkins ch
+            JOIN users u ON ch.employee_id = u.id
+            WHERE u.manager_id = ? AND ch.status = 'checked_in'
+        `, [req.user.id]);
 
         res.json({
             success: true,
-            date,
-            team_summary: teamResult.rows[0] || { active_employees: 0, total_checkins: 0, avg_distance: 0 },
-            employees: employeeResult.rows
+            data: {
+                team_size: teamMembers.rows.length,
+                team_members: teamMembers.rows,
+                today_checkins: todayCheckins.rows,
+                active_checkins: activeCount.rows[0].count
+            }
         });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Failed to load manager dashboard' });
+    }
+});
+
+/**
+ * EMPLOYEE DASHBOARD
+ * GET /api/dashboard/employee
+ */
+router.get('/employee', authenticateToken, async (req, res) => {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+
+        const todayCheckins = await db.query(`
+            SELECT ch.*, c.name AS client_name
+            FROM checkins ch
+            JOIN clients c ON ch.client_id = c.id
+            WHERE ch.employee_id = ? AND date(ch.checkin_time) = ?
+            ORDER BY ch.checkin_time DESC
+        `, [req.user.id, today]);
+
+        const clients = await db.query(`
+            SELECT c.*
+            FROM clients c
+            JOIN employee_clients ec ON c.id = ec.client_id
+            WHERE ec.employee_id = ?
+        `, [req.user.id]);
+
+        const weekStats = await db.query(`
+            SELECT 
+                COUNT(*) AS total_checkins,
+                COUNT(DISTINCT client_id) AS unique_clients
+            FROM checkins
+            WHERE employee_id = ?
+              AND checkin_time >= datetime('now', '-7 days')
+        `, [req.user.id]);
+
+        res.json({
+            success: true,
+            data: {
+                today_checkins: todayCheckins.rows,
+                assigned_clients: clients.rows,
+                week_stats: weekStats.rows[0]
+            }
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: 'Failed to load employee dashboard' });
     }
 });
 
